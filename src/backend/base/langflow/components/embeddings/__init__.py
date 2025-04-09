@@ -11,6 +11,7 @@ from .mistral import MistralAIEmbeddingsComponent
 from .nvidia import NVIDIAEmbeddingsComponent
 from .ollama import OllamaEmbeddingsComponent
 from .openai import OpenAIEmbeddingsComponent
+from .sentence_transformers import SentenceTransformersEmbeddingsComponent
 from .similarity import EmbeddingSimilarityComponent
 from .text_embedder import TextEmbedderComponent
 from .vertexai import VertexAIEmbeddingsComponent
@@ -31,6 +32,7 @@ __all__ = [
     "NVIDIAEmbeddingsComponent",
     "OllamaEmbeddingsComponent",
     "OpenAIEmbeddingsComponent",
+    "SentenceTransformersEmbeddingsComponent",
     "TextEmbedderComponent",
     "VertexAIEmbeddingsComponent",
     "WatsonxEmbeddingsComponent",
