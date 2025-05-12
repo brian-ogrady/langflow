@@ -1,7 +1,7 @@
 import { MISSED_ERROR_ALERT } from "@/constants/alerts_constants";
 import {
   BASE_URL_API,
-  POLLING_INTERVAL,
+  BUILD_POLLING_INTERVAL,
   POLLING_MESSAGES,
 } from "@/constants/constants";
 import { performStreamingRequest } from "@/controllers/API/api";
@@ -40,8 +40,7 @@ type BuildVerticesParams = {
   logBuilds?: boolean;
   session?: string;
   playgroundPage?: boolean;
-  stream?: boolean;
-  eventDelivery?: EventDeliveryType;
+  eventDelivery: EventDeliveryType;
 };
 
 function getInactiveVertexData(vertexId: string): VertexBuildTypeAPI {
@@ -148,7 +147,10 @@ export async function buildFlowVerticesWithFallback(
       e.message === POLLING_MESSAGES.STREAMING_NOT_SUPPORTED
     ) {
       // Fallback to polling
-      return await buildFlowVertices({ ...params, stream: false });
+      return await buildFlowVertices({
+        ...params,
+        eventDelivery: EventDeliveryType.POLLING,
+      });
     }
     throw e;
   }
@@ -176,13 +178,17 @@ async function pollBuildEvents(
 ): Promise<void> {
   let isDone = false;
   while (!isDone) {
-    const response = await fetch(`${url}?stream=false`, {
-      method: "GET",
-      headers: {
-        "Content-Type": "application/json",
+    const response = await fetch(
+      `${url}?event_delivery=${EventDeliveryType.POLLING}`,
+      {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/x-ndjson",
+        },
+        signal: abortController.signal, // Add abort signal to fetch
       },
-      signal: abortController.signal, // Add abort signal to fetch
-    });
+    );
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
@@ -192,34 +198,51 @@ async function pollBuildEvents(
       );
     }
 
-    const data = await response.json();
-    if (!data.event) {
-      // No event in this request, try again
+    // Get the response text - will be NDJSON format (one JSON per line)
+    const responseText = await response.text();
+
+    // Skip if empty response
+    if (!responseText.trim()) {
       await new Promise((resolve) => setTimeout(resolve, 100));
       continue;
     }
 
-    // Process the event
-    const event = JSON.parse(data.event);
-    const result = await onEvent(
-      event.event,
-      event.data,
-      buildResults,
-      verticesStartTimeMs,
-      callbacks,
-    );
-    if (!result) {
-      isDone = true;
-      abortController.abort();
+    // Split by newlines to get individual JSON objects
+    const eventLines = responseText.split("\n").filter((line) => line.trim());
+
+    // If no events, continue polling
+    if (eventLines.length === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      continue;
     }
 
-    // Check if this was the end event or if we got a null value
-    if (event.event === "end" || data.event === null) {
-      isDone = true;
+    // Process all events in the NDJSON response
+    for (const eventStr of eventLines) {
+      // Process the event
+      const event = JSON.parse(eventStr);
+      const result = await onEvent(
+        event.event,
+        event.data,
+        buildResults,
+        verticesStartTimeMs,
+        callbacks,
+      );
+
+      if (!result) {
+        isDone = true;
+        abortController.abort();
+        break;
+      }
+
+      // Check if this was the end event
+      if (event.event === "end") {
+        isDone = true;
+        break;
+      }
     }
 
-    // Add a small delay between polls to avoid overwhelming the server
-    await new Promise((resolve) => setTimeout(resolve, POLLING_INTERVAL));
+    // Add a small delay between polls
+    await new Promise((resolve) => setTimeout(resolve, BUILD_POLLING_INTERVAL));
   }
 }
 
@@ -241,7 +264,6 @@ export async function buildFlowVertices({
   logBuilds,
   session,
   playgroundPage,
-  stream = true,
   eventDelivery,
 }: BuildVerticesParams) {
   const inputs = {};
@@ -260,10 +282,10 @@ export async function buildFlowVertices({
     queryParams.append("log_builds", logBuilds.toString());
   }
 
-  // Add stream parameter when using direct event delivery
-  if (eventDelivery === EventDeliveryType.DIRECT) {
-    queryParams.append("stream", "true");
-  }
+  queryParams.append(
+    "event_delivery",
+    eventDelivery ?? EventDeliveryType.POLLING,
+  );
 
   if (queryParams.toString()) {
     buildUrl = `${buildUrl}?${queryParams.toString()}`;
@@ -376,13 +398,12 @@ export async function buildFlowVertices({
       }
     });
     useFlowStore.getState().setBuildController(buildController);
-
     // Then stream the events
     const eventsUrl = `${BASE_URL_API}build/${job_id}/events`;
     const buildResults: Array<boolean> = [];
     const verticesStartTimeMs: Map<string, number> = new Map();
 
-    if (stream) {
+    if (eventDelivery === EventDeliveryType.STREAMING) {
       return performStreamingRequest({
         method: "GET",
         url: eventsUrl,
